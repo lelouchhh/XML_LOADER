@@ -1,0 +1,8 @@
+batch: 1500
+filePath: "A:/Downloads/gar_xml.zip"
+db:
+  host: "178.154.254.105"
+  port: 5432
+  user: "inotech"
+  password: "platex"
+  dbname: "postgres"

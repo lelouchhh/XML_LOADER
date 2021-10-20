@@ -2,7 +2,6 @@ package verification
 
 import (
 	"../db"
-	"fmt"
 )
 
 var TablesDict = map[string]interface{}{
@@ -20,14 +19,11 @@ var TablesDict = map[string]interface{}{
 }
 
 
-func Verification(n string) (t interface{}){
+func Verification(n string) (t interface{}, s string){
 	if string(n[2]) == "/"{
-		fmt.Println(n[3:len(n)-50])
-		t = TablesDict[n[3:len(n)-50]]
+		return TablesDict[n[3:len(n)-50]], n[6:len(n)-50]
 	}else {
-		fmt.Println(TablesDict[n[0:len(n)-50]])
-		t = TablesDict[n[0:len(n)-50]]
+		return TablesDict[n[0:len(n)-50]], n[3:len(n)-50]
 	}
-	return
 }
 

@@ -1,36 +1,27 @@
 package db
 
 import (
-	"context"
+	"../config"
 	"database/sql"
 	"encoding/xml"
 	"fmt"
+	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"io"
-	"log"
+	"strings"
 )
 
-const (
-	Host     = "178.154.254.105"
-	Port     = 5432
-	User     = "inotech"
-	Password = "platex"
-	Dbname   = "postgres"
-	Size	 = 5000
-)
-
-
-type DbConfig struct {
-	Host string
-	Port int
-	User string
-	Password string
-	Dbname string
+var Size = getBatch()
+func getBatch() int{
+	var conf config.Conf
+	conf.GetConf()
+	return conf.Batch
 }
-func (dc DbConfig) Connect() (*sql.DB,error){
+
+func Connect(host, password, dbname, user string, port int) (*sql.DB, error){
 	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s "+
 		"password=%s dbname=%s sslmode=disable",
-		Host, Port, User, Password, Dbname)
+		host, port, user, password, dbname)
 
 	db, err := sql.Open("postgres", psqlInfo)
 	if err != nil {
@@ -39,29 +30,36 @@ func (dc DbConfig) Connect() (*sql.DB,error){
 	fmt.Println("Successfully connected!")
 	return db, err
 }
-
+func Regions(db *sqlx.DB) []string{
+	var regincode []string
+	err := db.Select(&regincode,"SELECT regioncode FROM gar.t_import_filter")
+	if err != nil {
+		// handle this error better than this
+		fmt.Println(err)
+	}
+	return regincode
+}
 
 type Reader interface {
 	Read()
 }
 
-func (s *AddHouseTypes) Read(db *sql.DB, r string, f io.ReadCloser, size int) {
+func (s *AddHouseTypes) Read(db *sqlx.DB, r string, f io.ReadCloser, size int) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]HouseType, Size+1)
 	for{
 		//fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					_, err := db.Exec(r, s.Attr[i].ID, s.Attr[i].Name, s.Attr[i].ShortName, s.Attr[i].Desc, s.Attr[i].StartDate, s.Attr[i].IsActive, s.Attr[i].EndDate)
-					if err != nil {
-						//fmt.Println(err)
-					}
+				_, err := db.NamedExec(s.Request, s.Attr[:total])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
 			}
+			break
 		}
 		for {
 			t, _ = decoder.Token()
@@ -81,43 +79,29 @@ func (s *AddHouseTypes) Read(db *sql.DB, r string, f io.ReadCloser, size int) {
 			default:
 			}
 			if total % Size == 0 && total != 0{
-				for i:=0; i<size; i++ {
-					_, err := db.Exec(r, s.Attr[i].ID, s.Attr[i].Name, s.Attr[i].ShortName, s.Attr[i].Desc, s.Attr[i].StartDate, s.Attr[i].IsActive, s.Attr[i].EndDate)
-					if err != nil {
-						//fmt.Println(err)
-					}
-					total = 0
+				_, err := db.NamedExec(s.Request, s.Attr[:Size])
+				if err != nil {
+					fmt.Println(err)
 				}
 				break
 			}
 		}
 	}
 }
-func (s *AddrObj) Read(db *sql.DB, r string, f io.ReadCloser, size int, code string) {
+func (s *AddrObj) Read(db *sqlx.DB, r string, f io.ReadCloser, size int, code string) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]Object, Size+1)
 	for{
 		//fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				ctx := context.Background()
-				tx, err := db.BeginTx(ctx, nil)
+				_, err := db.NamedExec(s.Request, s.Attr[0:total])
 				if err != nil {
 					fmt.Println(err)
 				}
-				fmt.Println(total)
-				for i:=0; i<size; i++ {
-					_, err := db.ExecContext(ctx, r, s.Attr[i].ID, s.Attr[i].ObjectID, s.Attr[i].ObjectUID, s.Attr[i].ChangeID,
-						s.Attr[i].Name, s.Attr[i].TypeName, s.Attr[i].Level, s.Attr[i].OperTypeID, s.Attr[i].prevID,
-						s.Attr[i].nextID, s.Attr[i].UpdateDate, s.Attr[i].StartDate, s.Attr[i].EndDate,
-						s.Attr[i].IsActual, s.Attr[i].IsActive, code)
-					if err != nil {
-						//fmt.Println(err)
-					}
-				}
-				err = tx.Commit()
 			}
 			break
 		}
@@ -133,50 +117,41 @@ func (s *AddrObj) Read(db *sql.DB, r string, f io.ReadCloser, size int, code str
 				if inElement == "OBJECT" {
 					var offer Object
 					decoder.DecodeElement(&offer, &se)
+					offer.RegionCode = code
 					s.Attr[total] = offer
 					total++
 				}
 			default:
 			}
-
 			if total % Size == 0 && total != 0{
-				ctx := context.Background()
-				tx, err := db.BeginTx(ctx, nil)
+				//fmt.Println(s.Attr)
+				_, err := db.NamedExec(s.Request, s.Attr[:Size])
 				if err != nil {
 					fmt.Println(err)
 				}
-				fmt.Println(total)
-				for i:=0; i<size; i++ {
-					_, err := db.ExecContext(ctx, r, s.Attr[i].ID, s.Attr[i].ObjectID, s.Attr[i].ObjectUID, s.Attr[i].ChangeID,
-						s.Attr[i].Name, s.Attr[i].TypeName, s.Attr[i].Level, s.Attr[i].OperTypeID, s.Attr[i].prevID,
-						s.Attr[i].nextID, s.Attr[i].UpdateDate, s.Attr[i].StartDate, s.Attr[i].EndDate,
-						s.Attr[i].IsActual, s.Attr[i].IsActive, code)
-					if err != nil {
-						//fmt.Println(err)
-					}
-				}
 				total = 0
-				err = tx.Commit()
 				break
 			}
 		}
 	}
 }
-func (s *AddrObjsDiv) Read(db *sql.DB, r string, f io.ReadCloser, size int, code string) {
+func (s *AddrObjsDiv) Read(db *sqlx.DB, r string, f io.ReadCloser, size int, code string) {
 	decoder := xml.NewDecoder(f)
 	fmt.Println(r)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
-	for{
+	s.Attr = make([]AddrObjsItem, Size+1)
+	for {
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					db.Exec(r, code, s.Attr[i].ID, s.Attr[i].ParentID, s.Attr[i].ChildID, s.Attr[i].ChangeID)
+				_, err := db.NamedExec(s.Request, s.Attr[:total])
+				if err != nil {
+					fmt.Println(err)
 				}
 			}
-			break
 		}
+		break
 		for {
 			t, _ = decoder.Token()
 			//fmt.Println(t)
@@ -188,42 +163,40 @@ func (s *AddrObjsDiv) Read(db *sql.DB, r string, f io.ReadCloser, size int, code
 				inElement = se.Name.Local
 				if inElement == "ITEM" {
 					var offer AddrObjsItem
+					offer.RegionCode = code
 					decoder.DecodeElement(&offer, &se)
 					s.Attr[total] = offer
 					total++
 				}
 			default:
 			}
-			if total % Size == 0 && total != 0{
-				for i:=0; i<size; i++ {
-					_, err := db.Exec(r, code, s.Attr[i].ID, s.Attr[i].ParentID, s.Attr[i].ChildID, s.Attr[i].ChangeID)
-					if err != nil {
-						break
-					}
-					total = 0
+			if total%Size == 0 && total != 0 {
+				_, err := db.NamedExec(s.Request, s.Attr[:Size])
+				if err != nil {
+					fmt.Println(err)
 				}
+				total = 0
 				break
 			}
 		}
 	}
 }
-func (s *AddrObjParams) Read(db *sql.DB, r string, f io.ReadCloser, size int, code string) {
+func (s *AddrObjParams) Read(db *sqlx.DB, r string, f io.ReadCloser, size int, code string) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]Params, Size+1)
 	for{
 		//fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					_, err := db.Exec(r, code, s.Attr[i].ID, s.Attr[i].ObjectID, s.Attr[i].ChangeID, s.Attr[i].ChangeIdEnd,s.Attr[i].TypeID, s.Attr[i].Value,  s.Attr[i].UpdateDate, s.Attr[i].StartDate, s.Attr[i].EndDate )
-					if err != nil {
-						//fmt.Println(err)
-					}
+				_, err := db.NamedExec(s.Request, s.Attr[:total])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
 			}
+			break
 		}
 		for {
 			t, _ = decoder.Token()
@@ -237,54 +210,50 @@ func (s *AddrObjParams) Read(db *sql.DB, r string, f io.ReadCloser, size int, co
 				if inElement == "PARAM" {
 					var offer Params
 					decoder.DecodeElement(&offer, &se)
+					offer.RegionCode = code
 					s.Attr[total] = offer
 					total++
 				}
 			default:
 			}
 			if total % Size == 0 && total != 0{
-				for i:=0; i<size; i++ {
-					_, err := db.Exec(r, code, s.Attr[i].ID, s.Attr[i].ObjectID, s.Attr[i].ChangeID, s.Attr[i].ChangeIdEnd,s.Attr[i].TypeID, s.Attr[i].Value,  s.Attr[i].UpdateDate, s.Attr[i].StartDate, s.Attr[i].EndDate )
-					if err != nil {
-						//fmt.Println(err)
-					}
-					total = 0
+				_, err := db.NamedExec(s.Request, s.Attr[:Size])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
+				total = 0
 			}
+			break
 		}
 	}
 }
-func (s *MunHierarchy) Read(db *sql.DB, r string, f io.ReadCloser, size int, code string) {
+func (s *MunHierarchy) Read(db *sqlx.DB, r string, f io.ReadCloser, size int, code string) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]MunHierarchyItem, Size+1)
 	for{
-		fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					_, err := db.Exec(r, code, s.Attr[i].ID, s.Attr[i].ObjectID, s.Attr[i].ParentObjID, s.Attr[i].ChangeID,s.Attr[i].Oktmo, s.Attr[i].PrevID,  s.Attr[i].NextID, s.Attr[i].UpdateDate, s.Attr[i].StartDate, s.Attr[i].EndDate, s.Attr[i].IsActive )
-					if err != nil {
-						fmt.Println(err)
-					}
+				_, err := db.NamedExec(s.Request, s.Attr[:total])
+				if err != nil {
+					fmt.Println(err)
 				}
 			}
 			break
 		}
 		for {
 			t, _ = decoder.Token()
-			fmt.Println(t)
 			if t == nil {
 				break
 			}
 			switch se := t.(type) {
 			case xml.StartElement:
 				inElement = se.Name.Local
-				fmt.Println(inElement)
 				if inElement == "ITEM" {
 					var offer MunHierarchyItem
+					offer.RegionCode = code
 					decoder.DecodeElement(&offer, &se)
 					s.Attr[total] = offer
 					total++
@@ -292,35 +261,33 @@ func (s *MunHierarchy) Read(db *sql.DB, r string, f io.ReadCloser, size int, cod
 			default:
 			}
 			if total % Size == 0 && total != 0{
-				for i:=0; i<size; i++ {
-					_, err := db.Exec(r, code, s.Attr[i].ID, s.Attr[i].ObjectID, s.Attr[i].ParentObjID, s.Attr[i].ChangeID,s.Attr[i].Oktmo, s.Attr[i].PrevID,  s.Attr[i].NextID, s.Attr[i].UpdateDate, s.Attr[i].StartDate, s.Attr[i].EndDate, s.Attr[i].IsActive )
+					_, err := db.NamedExec(s.Request, s.Attr[:Size])
 					if err != nil {
 						fmt.Println(err)
-					}
-					total = 0
 				}
+				total = 0
+
 				break
 			}
 		}
 	}
 }
-func (s *ChangeHist) Read(db *sql.DB, r string, f io.ReadCloser, size int, code string) {
+func (s *ChangeHist) Read(db *sqlx.DB, r string, f io.ReadCloser, size int, code string) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]ChangeHistItem, Size+1)
 	for{
 		//fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					_, err := db.Exec(r, code, s.Attr[i].ChangeID, s.Attr[i].ObjectID, s.Attr[i].AdrobjectID,s.Attr[i].OperTypeID, s.Attr[i].NdocID,  s.Attr[i].ChangeDate)
-					if err != nil {
-						//fmt.Println(err)
-					}
+				_, err := db.NamedExec(s.Request, s.Attr[0:total])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
 			}
+			break
 		}
 		for {
 			t, _ = decoder.Token()
@@ -334,41 +301,40 @@ func (s *ChangeHist) Read(db *sql.DB, r string, f io.ReadCloser, size int, code 
 				if inElement == "ITEM" {
 					var offer ChangeHistItem
 					decoder.DecodeElement(&offer, &se)
+					offer.RegionCode = code
 					s.Attr[total] = offer
 					total++
 				}
 			default:
 			}
 			if total % Size == 0 && total != 0{
-				for i:=0; i<size; i++ {
-					_, err := db.Exec(r, code, s.Attr[i].ChangeID, s.Attr[i].ObjectID, s.Attr[i].AdrobjectID,s.Attr[i].OperTypeID, s.Attr[i].NdocID,  s.Attr[i].ChangeDate)
-					if err != nil {
-						fmt.Println(err)
-					}
-					total = 0
+				//fmt.Println(s.Attr)
+				_, err := db.NamedExec(s.Request, s.Attr[:Size])
+				if err != nil {
+					fmt.Println(err)
 				}
+				total = 0
 				break
 			}
 		}
 	}
 }
-func (s *AddrObjTypes) Read(db *sql.DB, r string, f io.ReadCloser, size int) {
+func (s *AddrObjTypes) Read(db *sqlx.DB, r string, f io.ReadCloser, size int) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]AddrObjType, Size+1)
 	for{
 		//fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					_, err := db.Exec(r, s.Attr[i].ID, s.Attr[i].Level, s.Attr[i].ShortName, s.Attr[i].Name,s.Attr[i].Desc, s.Attr[i].UpdateDate,  s.Attr[i].StartDate,s.Attr[i].EndDate, s.Attr[i].IsActive)
-					if err != nil {
-						//fmt.Println(err)
-					}
+				_, err := db.NamedExec(s.Request, s.Attr[:total])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
 			}
+			break
 		}
 		for {
 			t, _ = decoder.Token()
@@ -388,35 +354,32 @@ func (s *AddrObjTypes) Read(db *sql.DB, r string, f io.ReadCloser, size int) {
 			default:
 			}
 			if total % Size == 0 && total != 0{
-				for i:=0; i<size; i++ {
-					_, err := db.Exec(r, s.Attr[i].ID, s.Attr[i].Level, s.Attr[i].ShortName, s.Attr[i].Name,s.Attr[i].Desc, s.Attr[i].UpdateDate,  s.Attr[i].StartDate,s.Attr[i].EndDate, s.Attr[i].IsActive)
-					if err != nil {
-						//fmt.Println(err)
-					}
-					total = 0
+				_, err := db.NamedExec(s.Request, s.Attr[:Size])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
+				total = 0
 			}
+			break
 		}
 	}
 }
-func (s *HouseTypes) Read(db *sql.DB, r string, f io.ReadCloser, size int) {
+func (s *HouseTypes) Read(db *sqlx.DB, r string, f io.ReadCloser, size int) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]HouseType, Size+1)
 	for{
 		//fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					_, err := db.Exec(r, s.Attr[i].ID, s.Attr[i].Name, s.Attr[i].ShortName, s.Attr[i].Desc, s.Attr[i].StartDate, s.Attr[i].IsActive, s.Attr[i].EndDate)
-					if err != nil {
-						//fmt.Println(err)
-					}
+				_, err := db.NamedExec(s.Request, s.Attr[0:total])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
 			}
+			break
 		}
 		for {
 			t, _ = decoder.Token()
@@ -436,137 +399,123 @@ func (s *HouseTypes) Read(db *sql.DB, r string, f io.ReadCloser, size int) {
 			default:
 			}
 			if total % Size == 0 && total != 0{
-				for i:=0; i<size; i++ {
-					_, err := db.Exec(r, s.Attr[i].ID, s.Attr[i].Name, s.Attr[i].ShortName, s.Attr[i].Desc, s.Attr[i].StartDate, s.Attr[i].IsActive, s.Attr[i].EndDate)
-					if err != nil {
-						//fmt.Println(err)
-					}
-					total = 0
+				_, err := db.NamedExec(s.Request, s.Attr[:Size])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
+				total = 0
 			}
+			break
 		}
 	}
 }
-func (s *AdmHierarchy) Read(db *sql.DB, r string, f io.ReadCloser, size int) {
+func (s *AdmHierarchy) Read(db *sqlx.DB, r string, f io.ReadCloser, size int) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]AdmHierarchyItem, Size+1)
 	for{
 		//fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					_, err := db.Exec(r, s.Attr[i].ID, s.Attr[i].ObjectID, s.Attr[i].ParentObjID, s.Attr[i].ChangeID,
-						s.Attr[i].AreaCode, s.Attr[i].CityCode, s.Attr[i].PlaceCode, s.Attr[i].PlanCode,
-						s.Attr[i].StreetCode, s.Attr[i].PrevID, s.Attr[i].NextID, s.Attr[i].UpdateDate,
-						s.Attr[i].StartDate, s.Attr[i].EndDate, s.Attr[i].IsActive, s.Attr[i].RegionCode)
-					if err != nil {
-						//fmt.Println(err)
-					}
+				_, err := db.NamedExec(s.Request, s.Attr[:total])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
 			}
 		}
-		for {
-			t, _ = decoder.Token()
-			//fmt.Println(t)
-			if t == nil {
-				break
+		break
+	}
+	for {
+		t, _ = decoder.Token()
+		//fmt.Println(t)
+		if t == nil {
+			break
+		}
+		switch se := t.(type) {
+		case xml.StartElement:
+			inElement = se.Name.Local
+			if inElement == "ITEM" {
+				var offer AdmHierarchyItem
+				decoder.DecodeElement(&offer, &se)
+				s.Attr[total] = offer
+				total++
 			}
-			switch se := t.(type) {
-			case xml.StartElement:
-				inElement = se.Name.Local
-				if inElement == "ITEM" {
-					var offer AdmHierarchyItem
-					decoder.DecodeElement(&offer, &se)
-					s.Attr[total] = offer
-					total++
-				}
-			default:
+		default:
+		}
+		if total % Size == 0 && total != 0{
+
+			_, err := db.NamedExec(s.Request, s.Attr[:Size])
+			if err != nil {
+				fmt.Println(err)
 			}
-			if total % Size == 0 && total != 0{
-				for i:=0; i<size; i++ {
-					_, err := db.Exec(r, s.Attr[i].ID, s.Attr[i].ObjectID, s.Attr[i].ParentObjID, s.Attr[i].ChangeID,
-						s.Attr[i].AreaCode, s.Attr[i].CityCode, s.Attr[i].PlaceCode, s.Attr[i].PlanCode,
-						s.Attr[i].StreetCode, s.Attr[i].PrevID, s.Attr[i].NextID, s.Attr[i].UpdateDate,
-						s.Attr[i].StartDate, s.Attr[i].EndDate, s.Attr[i].IsActive, s.Attr[i].RegionCode)
-					if err != nil {
-						//fmt.Println(err)
-					}
-					total = 0
-				}
-				break
-			}
+			total = 0
+
+			break
 		}
 	}
 }
-func (s *ObjectLevels) Read(db *sql.DB, r string, f io.ReadCloser, size int) {
+func (s *ObjectLevels) Read(db *sqlx.DB, r string, f io.ReadCloser, size int) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]ObjectLevel, Size+1)
 	for{
 		//fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					_, err := db.Exec(r, s.Attr[i].Level, s.Attr[i].Name, s.Attr[i].UpdateDate, s.Attr[i].StartDate,
-						s.Attr[i].EndDate, s.Attr[i].IsActive)
-					if err != nil {
-						//fmt.Println(err)
-					}
+				_, err := db.NamedExec(s.Request, s.Attr[:total])
+				if err != nil {
+					fmt.Println(err)
 				}
-				break
 			}
 		}
-		for {
-			t, _ = decoder.Token()
-			//fmt.Println(t)
-			if t == nil {
-				break
+		break
+	}
+	for {
+		t, _ = decoder.Token()
+		//fmt.Println(t)
+		if t == nil {
+			break
+		}
+		switch se := t.(type) {
+		case xml.StartElement:
+			inElement = se.Name.Local
+			if inElement == "OBJECTLEVEL" {
+				var offer ObjectLevel
+				decoder.DecodeElement(&offer, &se)
+				s.Attr[total] = offer
+				total++
 			}
-			switch se := t.(type) {
-			case xml.StartElement:
-				inElement = se.Name.Local
-				if inElement == "OBJECTLEVEL" {
-					var offer ObjectLevel
-					decoder.DecodeElement(&offer, &se)
-					s.Attr[total] = offer
-					total++
-				}
-			default:
+		default:
+		}
+		if total % Size == 0 && total != 0{
+
+			_, err := db.NamedExec(s.Request, s.Attr[:Size])
+			if err != nil {
+				fmt.Println(err)
 			}
-			if total % Size == 0 && total != 0{
-				for i:=0; i<size; i++ {
-					_, err := db.Exec(r, s.Attr[i].Level, s.Attr[i].Name, s.Attr[i].UpdateDate, s.Attr[i].StartDate,
-						s.Attr[i].EndDate, s.Attr[i].IsActive)
-					if err != nil {
-						//fmt.Println(err)
-					}
-					total = 0
-				}
-				break
-			}
+			total = 0
+
+			break
 		}
 	}
 }
-func (s *ReestrObj) Read(db *sql.DB, r string, f io.ReadCloser, size int, code string) {
+func (s *ReestrObj) Read(db *sqlx.DB, r string, f io.ReadCloser, size int, code string) {
 	decoder := xml.NewDecoder(f)
 	var inElement string
 	total := 0
 	t, _ := decoder.Token()
+	s.Attr = make([]ReestrObjObj, Size+1)
 	for{
 		//fmt.Println(t)
 		if t == nil {
 			if total != 0 {
-				for i := 0; i < total; i++ {
-					_, err := db.Exec(r, code, s.Attr[i].ObjectID, s.Attr[i].ObjectGUID, s.Attr[i].ChangeID,
-						s.Attr[i].IsActive, s.Attr[i].LevelID, s.Attr[i].CreateDate, s.Attr[i].UpdateDate)
-					if err != nil {
-						fmt.Println(err)
-					}
+				_, err := db.NamedExec(s.Request, s.Attr[0:total])
+				if err != nil {
+					fmt.Println(err)
 				}
 			}
 			break
@@ -583,28 +532,53 @@ func (s *ReestrObj) Read(db *sql.DB, r string, f io.ReadCloser, size int, code s
 				if inElement == "OBJECT" {
 					var offer ReestrObjObj
 					decoder.DecodeElement(&offer, &se)
+					offer.RegionCode = code
 					s.Attr[total] = offer
 					total++
 				}
 			default:
 			}
 			if total % Size == 0 && total != 0{
-				ctx := context.Background()
-				tx, err := db.BeginTx(ctx, nil)
+				//fmt.Println(s.Attr)
+				_, err := db.NamedExec(s.Request, s.Attr[:Size])
 				if err != nil {
-					log.Fatal(err)
-				}
-				for i:=0; i<size; i++ {
-					_, err := db.ExecContext(ctx,r, code, s.Attr[i].ObjectID, s.Attr[i].ObjectGUID, s.Attr[i].ChangeID,
-						s.Attr[i].IsActive, s.Attr[i].LevelID, s.Attr[i].CreateDate, s.Attr[i].UpdateDate)
-					if err != nil {
-						//fmt.Println(err)
-					}
+					fmt.Println(err)
 				}
 				total = 0
-				err = tx.Commit()
 				break
 			}
 		}
 	}
+}
+func ClearItable(db *sqlx.DB, t, c string) error{
+	sqlStatement := "call gar.gar_clear_itable ('"+strings.ToLower(t)+"', '"+c+"');"
+	_, err := db.Exec(sqlStatement)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return err
+}
+func CreateIndexSegment (db *sqlx.DB, t, c string) error{
+	sqlStatement := "call gar.gar_create_index_segment ('"+strings.ToLower(t)+"', '"+c+"');"
+	_, err := db.Exec(sqlStatement)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return err
+}
+func ErrorLog (db *sqlx.DB, msg string) error{
+	sqlStatement := "call gar.loader_error_msg('"+msg+"');"
+	_, err := db.Exec(sqlStatement)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return err
+}
+func MsgLog(db *sqlx.DB, msg string) error{
+	sqlStatement := "call gar.loader_notify_msg('"+msg+"');"
+	_, err := db.Exec(sqlStatement)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return err
 }
